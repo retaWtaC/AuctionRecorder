@@ -20,8 +20,7 @@ QString fromStd(const std::string &s)
 } // namespace
 
 AuctionData::AuctionData()
-    : m_loaded(false),
-      m_timeLimitSeconds(30)
+    : m_loaded(false)
 {
 }
 
@@ -30,7 +29,6 @@ void AuctionData::clear()
     m_loaded = false;
     m_sourcePath.clear();
     m_eventName.clear();
-    m_timeLimitSeconds = 30;
     m_items.clear();
     m_classNames.clear();
 }
@@ -180,16 +178,6 @@ bool AuctionData::loadFromFile(const QString &filePath, QString *errorMsg)
         const QString name = fromStd(strValue).trimmed();
         if (!name.isEmpty())
             m_eventName = name;
-    }
-
-    m_timeLimitSeconds = 30;
-    int64 limitValue = 0;
-    if (root.Get("timeLimitSeconds", limitValue))
-    {
-        if (limitValue > 0 && limitValue <= 3600)
-            m_timeLimitSeconds = static_cast<int>(limitValue);
-        else
-            problems << QStringLiteral("timeLimitSeconds 必须是 1~3600 之间的整数。");
     }
 
     // 拍品

@@ -10,11 +10,9 @@
 
 class QCloseEvent;
 class QLabel;
-class QProgressBar;
 class QPushButton;
 class QStackedWidget;
 class QTableWidget;
-class QTimer;
 
 /**
  * @brief 主窗口：三个页面（准备 / 拍卖 / 结果）共用一个 QStackedWidget
@@ -36,10 +34,9 @@ protected:
 private slots:
     void onChooseFile();             // 选择数据文件
     void onStartAuction();           // 开始拍卖
-    void onFinishCountdownEarly();   // 提前结束计时 / 录入结果
+    void onRecordResult();           // 录入当前拍品的结果
+    void onModifyResult();           // 修改已经录入的结果
     void onPreviousItem();           // 上一件
-    void onCountdownTick();          // 倒计时每秒触发
-    void onBlinkTick();              // 最后 5 秒的闪烁
     void onExportCsv();              // 导出 CSV
     void onRestart();                // 重新开始
 
@@ -54,14 +51,8 @@ private:
     void refreshPreparePage();
 
     void showItem(int index);
-    void startCountdown();
-    void stopCountdown();
-    void updateCountdownLabel();
-    void setCountdownColor(const QString &color);
-    void startBlink();
-    void stopBlink();
 
-    bool askForRecord();             // 弹出录入对话框，确认并写入返回 true
+    bool askForRecord(int index);    // 弹出录入对话框，确认并写入返回 true
     void goToNextItem();
     void finishAuction();
     void refreshResultPage();
@@ -71,11 +62,6 @@ private:
     QVector<AuctionRecord> m_records;
     int  m_index;                    // 当前拍品下标（0 起）
     bool m_auctionRunning;           // 拍卖进行中（未到结果页）
-    int  m_remainingSeconds;
-    bool m_blinkOn;
-
-    QTimer *m_countdownTimer;
-    QTimer *m_blinkTimer;
 
     // ---- 界面 ----
     QStackedWidget *m_stack;
@@ -94,10 +80,9 @@ private:
     QLabel *m_itemNameLabel;
     QLabel *m_itemDescLabel;
     QLabel *m_startPriceLabel;
-    QLabel *m_countdownLabel;
-    QProgressBar *m_timeBar;
     QPushButton *m_previousButton;
-    QPushButton *m_finishButton;
+    QPushButton *m_modifyButton;
+    QPushButton *m_recordButton;
 
     QLabel *m_resultTitleLabel;
     QTableWidget *m_resultTable;

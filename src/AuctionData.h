@@ -37,7 +37,6 @@ public:
     bool isLoaded() const { return m_loaded; }
     QString sourcePath() const { return m_sourcePath; }
     QString eventName() const { return m_eventName; }
-    int timeLimitSeconds() const { return m_timeLimitSeconds; }
     const QVector<AuctionItem> &items() const { return m_items; }
     const QStringList &classNames() const { return m_classNames; }
 
@@ -45,7 +44,6 @@ private:
     bool m_loaded;
     QString m_sourcePath;
     QString m_eventName;
-    int m_timeLimitSeconds;
     QVector<AuctionItem> m_items;
     QStringList m_classNames;
 };

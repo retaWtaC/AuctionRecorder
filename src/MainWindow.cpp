@@ -1,6 +1,5 @@
 #include "MainWindow.h"
 
-#include <QApplication>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDialog>
@@ -13,11 +12,11 @@
 #include <QHBoxLayout>
 #include <QColor>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QMap>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
@@ -26,7 +25,6 @@
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTableWidgetItem>
-#include <QTimer>
 #include <QVBoxLayout>
 
 #include "ResultExporter.h"
@@ -37,19 +35,24 @@ namespace {
 const int kUnselected = -1;   // 还没选
 const int kNoBuyer    = -2;   // 无人竞拍（流拍）
 
-/// 金额按千位加逗号，避免用 QLocale 依赖系统区域设置
-QString moneyText(qint64 value)
+/// 元 → 万元，最多保留 4 位小数并去掉末尾多余的 0
+QString wanNumber(qint64 yuan)
 {
-    QString text = QString::number(value);
-    for (int pos = text.size() - 3; pos > 0; pos -= 3)
-        text.insert(pos, QLatin1Char(','));
-    return text;
+    const qint64 whole = yuan / 10000;
+    const qint64 fraction = yuan % 10000;
+    if (fraction == 0)
+        return QString::number(whole);
+
+    QString fractionText = QStringLiteral("%1").arg(fraction, 4, 10, QLatin1Char('0'));
+    while (fractionText.endsWith(QLatin1Char('0')))
+        fractionText.chop(1);
+    return QStringLiteral("%1.%2").arg(whole).arg(fractionText);
 }
 
-/// 带"元"单位的金额文本
-QString yuanText(qint64 value)
+/// 带"万元"单位的金额文本
+QString wanText(qint64 yuan)
 {
-    return QStringLiteral("%1 元").arg(moneyText(value));
+    return QStringLiteral("%1 万元").arg(wanNumber(yuan));
 }
 
 } // namespace
@@ -58,10 +61,6 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
       m_index(0),
       m_auctionRunning(false),
-      m_remainingSeconds(0),
-      m_blinkOn(false),
-      m_countdownTimer(nullptr),
-      m_blinkTimer(nullptr),
       m_stack(nullptr),
       m_preparePage(nullptr),
       m_auctionPage(nullptr),
@@ -76,10 +75,9 @@ MainWindow::MainWindow(QWidget *parent)
       m_itemNameLabel(nullptr),
       m_itemDescLabel(nullptr),
       m_startPriceLabel(nullptr),
-      m_countdownLabel(nullptr),
-      m_timeBar(nullptr),
       m_previousButton(nullptr),
-      m_finishButton(nullptr),
+      m_modifyButton(nullptr),
+      m_recordButton(nullptr),
       m_resultTitleLabel(nullptr),
       m_resultTable(nullptr),
       m_statLabel(nullptr),
@@ -89,15 +87,6 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("人生拍卖会 · 拍卖结果记录"));
     resize(1120, 780);
-
-    // 倒计时：1 秒一跳；闪烁：0.4 秒一次
-    m_countdownTimer = new QTimer(this);
-    m_countdownTimer->setInterval(1000);
-    connect(m_countdownTimer, &QTimer::timeout, this, &MainWindow::onCountdownTick);
-
-    m_blinkTimer = new QTimer(this);
-    m_blinkTimer->setInterval(400);
-    connect(m_blinkTimer, &QTimer::timeout, this, &MainWindow::onBlinkTick);
 
     buildUi();
     applyStyle();
@@ -174,7 +163,7 @@ QWidget *MainWindow::createPreparePage()
     m_previewTable = new QTableWidget(0, 3);
     m_previewTable->setHorizontalHeaderLabels(
         QStringList() << QStringLiteral("序号") << QStringLiteral("拍品名称")
-                      << QStringLiteral("起拍价"));
+                      << QStringLiteral("起拍价（万元）"));
     m_previewTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_previewTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_previewTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -230,18 +219,6 @@ QWidget *MainWindow::createAuctionPage()
     m_startPriceLabel->setObjectName(QStringLiteral("StartPrice"));
     m_startPriceLabel->setAlignment(Qt::AlignCenter);
 
-    m_countdownLabel = new QLabel(QStringLiteral("--"));
-    m_countdownLabel->setAlignment(Qt::AlignCenter);
-    m_countdownLabel->setMinimumHeight(150);
-    m_countdownLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    setCountdownColor(QStringLiteral("#1565c0"));
-
-    m_timeBar = new QProgressBar;
-    m_timeBar->setTextVisible(false);
-    m_timeBar->setFixedHeight(12);
-    m_timeBar->setRange(0, 30);
-    m_timeBar->setValue(0);
-
     QHBoxLayout *actionRow = new QHBoxLayout;
     actionRow->setSpacing(14);
 
@@ -251,22 +228,25 @@ QWidget *MainWindow::createAuctionPage()
     m_previousButton->setEnabled(false);
     connect(m_previousButton, &QPushButton::clicked, this, &MainWindow::onPreviousItem);
 
-    m_finishButton = new QPushButton(QStringLiteral("提前结束计时"));
-    m_finishButton->setObjectName(QStringLiteral("PrimaryButton"));
-    m_finishButton->setMinimumSize(260, 52);
-    connect(m_finishButton, &QPushButton::clicked, this, &MainWindow::onFinishCountdownEarly);
+    m_modifyButton = new QPushButton(QStringLiteral("修改结果"));
+    m_modifyButton->setObjectName(QStringLiteral("SecondaryButton"));
+    m_modifyButton->setMinimumSize(180, 52);
+    connect(m_modifyButton, &QPushButton::clicked, this, &MainWindow::onModifyResult);
+
+    m_recordButton = new QPushButton(QStringLiteral("录入结果"));
+    m_recordButton->setObjectName(QStringLiteral("PrimaryButton"));
+    m_recordButton->setMinimumSize(220, 52);
+    connect(m_recordButton, &QPushButton::clicked, this, &MainWindow::onRecordResult);
 
     actionRow->addWidget(m_previousButton);
     actionRow->addStretch(1);
-    actionRow->addWidget(m_finishButton);
+    actionRow->addWidget(m_modifyButton);
+    actionRow->addWidget(m_recordButton);
 
     root->addWidget(m_progressLabel);
     root->addWidget(m_itemNameLabel);
     root->addWidget(m_itemDescLabel);
     root->addWidget(m_startPriceLabel);
-    root->addStretch(1);
-    root->addWidget(m_countdownLabel);
-    root->addWidget(m_timeBar);
     root->addStretch(1);
     root->addLayout(actionRow);
 
@@ -287,8 +267,8 @@ QWidget *MainWindow::createResultPage()
     m_resultTable = new QTableWidget(0, 6);
     m_resultTable->setHorizontalHeaderLabels(
         QStringList() << QStringLiteral("序号") << QStringLiteral("拍品名称")
-                      << QStringLiteral("起拍价") << QStringLiteral("成交价")
-                      << QStringLiteral("买家班级") << QStringLiteral("状态"));
+                      << QStringLiteral("起拍价（万元）") << QStringLiteral("成交价（万元）")
+                      << QStringLiteral("买家") << QStringLiteral("状态"));
     m_resultTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_resultTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_resultTable->setAlternatingRowColors(true);
@@ -361,8 +341,6 @@ void MainWindow::applyStyle()
         "QTableWidget::item:selected { background-color: #d6e6f8; color: #1f2329; }"
         "QHeaderView::section { background-color: #e9eef4; color: #2d3748; font-weight: bold;"
         "  padding: 8px; border: none; border-bottom: 1px solid #d3dae3; }"
-        "QProgressBar { background-color: #e2e8f0; border: none; border-radius: 6px; }"
-        "QProgressBar::chunk { background-color: #1565c0; border-radius: 6px; }"
     );
     setStyleSheet(style);
 }
@@ -404,10 +382,9 @@ void MainWindow::refreshPreparePage()
     if (loaded)
     {
         m_eventLabel->setText(m_data.eventName());
-        m_summaryLabel->setText(QStringLiteral("共 %1 件拍品　｜　%2 个参赛班级　｜　每件限时 %3 秒")
+        m_summaryLabel->setText(QStringLiteral("共 %1 件拍品　｜　%2 个参与者")
                                     .arg(m_data.items().size())
-                                    .arg(m_data.classNames().size())
-                                    .arg(m_data.timeLimitSeconds()));
+                                    .arg(m_data.classNames().size()));
         m_fileLabel->setText(QStringLiteral("数据文件：%1")
                                  .arg(QDir::toNativeSeparators(m_data.sourcePath())));
     }
@@ -436,7 +413,7 @@ void MainWindow::refreshPreparePage()
             if (!item.description.isEmpty())
                 nameItem->setToolTip(item.description);
 
-            QTableWidgetItem *priceItem = new QTableWidgetItem(yuanText(item.startPrice));
+            QTableWidgetItem *priceItem = new QTableWidgetItem(wanNumber(item.startPrice));
             priceItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
             m_previewTable->setItem(row, 0, noItem);
@@ -481,8 +458,6 @@ void MainWindow::onStartAuction()
 
     m_stack->setCurrentWidget(m_auctionPage);
     showItem(m_index);
-    m_finishButton->setText(QStringLiteral("提前结束计时"));
-    startCountdown();
 }
 
 void MainWindow::showItem(int index)
@@ -499,124 +474,87 @@ void MainWindow::showItem(int index)
                                  ? QStringLiteral("（本件没有说明）")
                                  : item.description);
     m_startPriceLabel->setText(
-        QStringLiteral("起拍价：%1").arg(yuanText(item.startPrice)));
+        QStringLiteral("起拍价：%1").arg(wanText(item.startPrice)));
     m_previousButton->setEnabled(index > 0);
-}
 
-void MainWindow::startCountdown()
-{
-    const int limit = qMax(1, m_data.timeLimitSeconds());
-    m_remainingSeconds = limit;
-    m_timeBar->setRange(0, limit);
-    m_timeBar->setValue(limit);
-    m_blinkOn = false;
-    updateCountdownLabel();
-    m_countdownTimer->start();
-}
-
-void MainWindow::stopCountdown()
-{
-    m_countdownTimer->stop();
-    stopBlink();
-}
-
-void MainWindow::updateCountdownLabel()
-{
-    const int seconds = qMax(0, m_remainingSeconds);
-    m_countdownLabel->setText(QString::number(seconds));
-    m_timeBar->setValue(seconds);
-
-    const bool urgent = (seconds <= 5 && seconds > 0);
-    if (urgent)
+    bool hasRecorded = false;
+    for (const AuctionRecord &record : m_records)
     {
-        startBlink();
-        if (!m_blinkOn)
+        if (record.recorded)
         {
-            m_blinkOn = true;
-            setCountdownColor(QStringLiteral("#d32f2f"));
+            hasRecorded = true;
+            break;
         }
-        m_timeBar->setStyleSheet(
-            QStringLiteral("QProgressBar::chunk { background-color: #d32f2f; border-radius: 6px; }"));
     }
-    else
-    {
-        stopBlink();
-        setCountdownColor(seconds == 0 ? QStringLiteral("#d32f2f")
-                                       : QStringLiteral("#1565c0"));
-        m_timeBar->setStyleSheet(QString());
-    }
+    m_modifyButton->setEnabled(hasRecorded);
 }
 
-void MainWindow::setCountdownColor(const QString &color)
+void MainWindow::onRecordResult()
 {
-    static const QString pattern =
-        QStringLiteral("font-size: 96px; font-weight: bold; color: %1; background: transparent;");
-    m_countdownLabel->setStyleSheet(pattern.arg(color));
-}
+    if (!m_auctionRunning)
+        return;
 
-void MainWindow::startBlink()
-{
-    if (!m_blinkTimer->isActive())
-        m_blinkTimer->start();
-}
-
-void MainWindow::stopBlink()
-{
-    m_blinkTimer->stop();
-}
-
-void MainWindow::onBlinkTick()
-{
-    m_blinkOn = !m_blinkOn;
-    setCountdownColor(m_blinkOn ? QStringLiteral("#d32f2f")
-                                : QStringLiteral("#ff8a80"));
-}
-
-void MainWindow::onCountdownTick()
-{
-    if (m_remainingSeconds > 0)
-        --m_remainingSeconds;
-
-    updateCountdownLabel();
-
-    if (m_remainingSeconds <= 0)
-    {
-        // 时间到：停表、保持红色，直接弹出录入对话框
-        stopCountdown();
-        setCountdownColor(QStringLiteral("#d32f2f"));
-        m_timeBar->setStyleSheet(
-            QStringLiteral("QProgressBar::chunk { background-color: #d32f2f; border-radius: 6px; }"));
-        QApplication::beep();
-        onFinishCountdownEarly();
-    }
-}
-
-void MainWindow::onFinishCountdownEarly()
-{
-    stopCountdown();
-
-    if (askForRecord())
-    {
+    if (askForRecord(m_index))
         goToNextItem();
+}
+
+void MainWindow::onModifyResult()
+{
+    if (!m_auctionRunning)
+        return;
+
+    QStringList choices;
+    QVector<int> indexes;
+    const QVector<AuctionItem> &items = m_data.items();
+
+    for (int i = 0; i < items.size() && i < m_records.size(); ++i)
+    {
+        const AuctionRecord &record = m_records.at(i);
+        if (!record.recorded)
+            continue;
+
+        const QString resultText = record.sold
+            ? QStringLiteral("%1 · %2").arg(wanText(record.finalPrice), record.buyerClass)
+            : QStringLiteral("流拍");
+        choices << QStringLiteral("第 %1 件：%2（%3）")
+                       .arg(i + 1)
+                       .arg(items.at(i).name)
+                       .arg(resultText);
+        indexes << i;
+    }
+
+    if (choices.isEmpty())
+    {
+        QMessageBox::information(this, QStringLiteral("暂无结果"),
+                                 QStringLiteral("还没有录入任何拍卖结果。"));
         return;
     }
 
-    // 取消录入：停在这一件，等拍卖师再点按钮，不会自动跳下一件
-    m_finishButton->setText(QStringLiteral("录入结果"));
-    m_finishButton->setFocus();
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, QStringLiteral("修改结果"), QStringLiteral("请选择要修改的拍品："),
+        choices, 0, false, &ok);
+    if (!ok || choice.isEmpty())
+        return;
+
+    const int choiceIndex = choices.indexOf(choice);
+    if (choiceIndex < 0)
+        return;
+    askForRecord(indexes.at(choiceIndex));
 }
 
-bool MainWindow::askForRecord()
+bool MainWindow::askForRecord(int index)
 {
     const QVector<AuctionItem> &items = m_data.items();
-    if (m_index < 0 || m_index >= items.size() || m_index >= m_records.size())
+    if (index < 0 || index >= items.size() || index >= m_records.size())
         return false;
 
-    const AuctionItem &item = items.at(m_index);
-    const AuctionRecord existing = m_records.at(m_index);
+    const AuctionItem &item = items.at(index);
+    const AuctionRecord existing = m_records.at(index);
 
     QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("录入拍卖结果"));
+    dialog.setWindowTitle(existing.recorded ? QStringLiteral("修改拍卖结果")
+                                            : QStringLiteral("录入拍卖结果"));
     dialog.setModal(true);
     dialog.setMinimumWidth(480);
 
@@ -625,33 +563,33 @@ bool MainWindow::askForRecord()
     layout->setSpacing(14);
 
     QLabel *title = new QLabel(
-        QStringLiteral("第 %1 件：%2").arg(m_index + 1).arg(item.name));
+        QStringLiteral("第 %1 件：%2").arg(index + 1).arg(item.name));
     title->setObjectName(QStringLiteral("SectionTitle"));
     title->setWordWrap(true);
 
     QLabel *hint = new QLabel(
-        QStringLiteral("起拍价 %1，成交价不得低于起拍价。").arg(yuanText(item.startPrice)));
+        QStringLiteral("起拍价 %1，成交价不得低于起拍价。").arg(wanText(item.startPrice)));
     hint->setObjectName(QStringLiteral("FileHint"));
     hint->setWordWrap(true);
 
     QLineEdit *priceEdit = new QLineEdit;
     priceEdit->setMinimumHeight(40);
     priceEdit->setPlaceholderText(
-        QStringLiteral("请输入整数金额，例如 %1").arg(QString::number(item.startPrice)));
+        QStringLiteral("请输入万元金额，例如 %1").arg(wanNumber(item.startPrice)));
     priceEdit->setValidator(new QRegularExpressionValidator(
-        QRegularExpression(QStringLiteral("\\d{0,9}")), priceEdit));
+        QRegularExpression(QStringLiteral("\\d{0,9}(\\.\\d{0,4})?")), priceEdit));
 
     QComboBox *classBox = new QComboBox;
     classBox->setMinimumHeight(40);
-    classBox->addItem(QStringLiteral("— 请选择买家班级 —"), kUnselected);
+    classBox->addItem(QStringLiteral("— 请选择买家 —"), kUnselected);
     for (int i = 0; i < m_data.classNames().size(); ++i)
         classBox->addItem(m_data.classNames().at(i), i);
     classBox->addItem(QStringLiteral("无人竞拍（流拍）"), kNoBuyer);
 
     QFormLayout *form = new QFormLayout;
     form->setSpacing(10);
-    form->addRow(QStringLiteral("成交价（元）"), priceEdit);
-    form->addRow(QStringLiteral("买家班级"), classBox);
+    form->addRow(QStringLiteral("买家"), classBox);
+    form->addRow(QStringLiteral("成交价（万元）"), priceEdit);
 
     QDialogButtonBox *buttonBox =
         new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -671,7 +609,7 @@ bool MainWindow::askForRecord()
             const int classIdx = m_data.classNames().indexOf(existing.buyerClass);
             if (classIdx >= 0)
                 classBox->setCurrentIndex(classIdx + 1);
-            priceEdit->setText(QString::number(existing.finalPrice));
+            priceEdit->setText(wanNumber(existing.finalPrice));
         }
         else
         {
@@ -701,7 +639,7 @@ bool MainWindow::askForRecord()
         if (choice == kUnselected)
         {
             QMessageBox::warning(&dialog, QStringLiteral("还不能确认"),
-                                 QStringLiteral("请选择买家班级；如果没人出价，请选「无人竞拍（流拍）」。"));
+                                 QStringLiteral("请选择买家；如果没人出价，请选「无人竞拍（流拍）」。"));
             classBox->setFocus();
             continue;
         }
@@ -719,21 +657,24 @@ bool MainWindow::askForRecord()
         {
             const QString text = priceEdit->text().trimmed();
             bool ok = false;
-            const qint64 price = text.toLongLong(&ok);
+            const double wan = text.toDouble(&ok);
 
             if (text.isEmpty() || !ok)
             {
                 QMessageBox::warning(&dialog, QStringLiteral("成交价无效"),
-                                     QStringLiteral("请输入一个整数金额，单位为元。"));
+                                     QStringLiteral("请输入万元金额，最多 4 位小数。"));
                 priceEdit->setFocus();
                 priceEdit->selectAll();
                 continue;
             }
+
+            // 界面按万元录入，内部仍以元保存，避免浮点误差进入数据层
+            const qint64 price = static_cast<qint64>(wan * 10000.0 + 0.5);
             if (price < item.startPrice)
             {
                 QMessageBox::warning(&dialog, QStringLiteral("成交价过低"),
                                      QStringLiteral("成交价不能低于起拍价 %1。")
-                                         .arg(yuanText(item.startPrice)));
+                                         .arg(wanText(item.startPrice)));
                 priceEdit->setFocus();
                 priceEdit->selectAll();
                 continue;
@@ -744,7 +685,7 @@ bool MainWindow::askForRecord()
             record.buyerClass = m_data.classNames().value(choice);
         }
 
-        m_records[m_index] = record;
+        m_records[index] = record;
         return true;
     }
 
@@ -761,8 +702,6 @@ void MainWindow::goToNextItem()
 
     ++m_index;
     showItem(m_index);
-    m_finishButton->setText(QStringLiteral("提前结束计时"));
-    startCountdown();
 }
 
 void MainWindow::onPreviousItem()
@@ -771,22 +710,15 @@ void MainWindow::onPreviousItem()
         return;
 
     --m_index;
-    stopCountdown();
     showItem(m_index);
 
     // 回退后直接把原值弹出来，改完继续往下走
-    if (askForRecord())
-    {
+    if (askForRecord(m_index))
         goToNextItem();
-        return;
-    }
-
-    m_finishButton->setText(QStringLiteral("录入结果"));
 }
 
 void MainWindow::finishAuction()
 {
-    stopCountdown();
     m_auctionRunning = false;
     refreshResultPage();
     m_stack->setCurrentWidget(m_resultPage);
@@ -828,11 +760,11 @@ void MainWindow::refreshResultPage()
 
         QTableWidgetItem *nameItem = new QTableWidgetItem(item.name);
 
-        QTableWidgetItem *startItem = new QTableWidgetItem(yuanText(item.startPrice));
+        QTableWidgetItem *startItem = new QTableWidgetItem(wanNumber(item.startPrice));
         startItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
         QTableWidgetItem *finalItem =
-            new QTableWidgetItem(sold ? yuanText(record.finalPrice) : QStringLiteral("—"));
+            new QTableWidgetItem(sold ? wanNumber(record.finalPrice) : QStringLiteral("—"));
         finalItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
         QTableWidgetItem *buyerItem =
@@ -856,22 +788,22 @@ void MainWindow::refreshResultPage()
     m_statLabel->setText(QStringLiteral("成交 %1 件　｜　流拍 %2 件　｜　总成交金额 %3")
                              .arg(soldCount)
                              .arg(unsoldCount)
-                             .arg(yuanText(totalAmount)));
+                             .arg(wanText(totalAmount)));
 
     if (classCounts.isEmpty())
     {
-        m_classStatLabel->setText(QStringLiteral("各班级拍得件数：本场没有成交记录"));
+        m_classStatLabel->setText(QStringLiteral("各参与者拍得件数：本场没有成交记录"));
     }
     else
     {
         QStringList parts;
-        // 按班级列表顺序输出，读起来和名册一致
+        // 按人员列表顺序输出，读起来和名册一致
         for (const QString &name : m_data.classNames())
         {
             const int count = classCounts.value(name, 0);
             parts << QStringLiteral("%1 %2 件").arg(name).arg(count);
         }
-        m_classStatLabel->setText(QStringLiteral("各班级拍得件数：%1")
+        m_classStatLabel->setText(QStringLiteral("各参与者拍得件数：%1")
                                       .arg(parts.join(QStringLiteral("　｜　"))));
     }
 }
@@ -928,15 +860,9 @@ void MainWindow::onRestart()
             return;
     }
 
-    stopCountdown();
     m_records = QVector<AuctionRecord>(m_data.items().size());
     m_index = 0;
     m_auctionRunning = false;
-    m_remainingSeconds = 0;
-    m_countdownLabel->setText(QStringLiteral("--"));
-    setCountdownColor(QStringLiteral("#1565c0"));
-    m_timeBar->setStyleSheet(QString());
-    m_timeBar->setValue(0);
 
     refreshPreparePage();
     m_stack->setCurrentWidget(m_preparePage);
@@ -957,7 +883,6 @@ void MainWindow::closeEvent(QCloseEvent *event)
         }
     }
 
-    stopCountdown();
     event->accept();
 }
 

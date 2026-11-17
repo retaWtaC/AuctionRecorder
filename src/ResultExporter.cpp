@@ -8,9 +8,18 @@
 
 namespace {
 
-QString numberText(qint64 value)
+/// 元 → 万元，最多保留 4 位小数并去掉末尾多余的 0
+QString wanNumber(qint64 yuan)
 {
-    return QString::number(value);
+    const qint64 whole = yuan / 10000;
+    const qint64 fraction = yuan % 10000;
+    if (fraction == 0)
+        return QString::number(whole);
+
+    QString fractionText = QStringLiteral("%1").arg(fraction, 4, 10, QLatin1Char('0'));
+    while (fractionText.endsWith(QLatin1Char('0')))
+        fractionText.chop(1);
+    return QStringLiteral("%1.%2").arg(whole).arg(fractionText);
 }
 
 } // namespace
@@ -91,7 +100,7 @@ bool ResultExporter::exportCsv(const QString &filePath,
     out += eol.toUtf8();
 
     // ---- 明细表 ----
-    out += QStringLiteral("序号,拍品名称,起拍价,成交价,买家班级,状态").toUtf8();
+    out += QStringLiteral("序号,拍品名称,起拍价（万元）,成交价（万元）,买家班级,状态").toUtf8();
     out += eol.toUtf8();
 
     int soldCount = 0;
@@ -120,8 +129,8 @@ bool ResultExporter::exportCsv(const QString &filePath,
         QStringList cells;
         cells << QString::number(i + 1)
               << escapeField(item.name)
-              << numberText(item.startPrice)
-              << (sold ? numberText(record.finalPrice) : QStringLiteral("0"))
+              << wanNumber(item.startPrice)
+              << (sold ? wanNumber(record.finalPrice) : QStringLiteral("0"))
               << escapeField(sold ? record.buyerClass : QString())
               << (sold ? QStringLiteral("成交") : QStringLiteral("流拍"));
 
@@ -137,7 +146,7 @@ bool ResultExporter::exportCsv(const QString &filePath,
     const QStringList statsLines = QStringList()
         << QStringLiteral("成交件数,%1").arg(soldCount)
         << QStringLiteral("流拍件数,%1").arg(unsoldCount)
-        << QStringLiteral("总成交金额,%1").arg(totalAmount)
+        << QStringLiteral("总成交金额（万元）,%1").arg(wanNumber(totalAmount))
         << QStringLiteral("拍品总数,%1").arg(rowCount);
 
     for (const QString &line : statsLines)

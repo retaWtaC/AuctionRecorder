@@ -25,7 +25,6 @@ int main(int argc, char *argv[])
     }
 
     qDebug().noquote() << "event  =" << data.eventName();
-    qDebug().noquote() << "limit  =" << data.timeLimitSeconds();
     qDebug().noquote() << "items  =" << data.items().size();
     qDebug().noquote() << "classes=" << data.classNames().join(QStringLiteral(", "));
     for (const AuctionItem &item : data.items())
